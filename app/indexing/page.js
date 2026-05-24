@@ -10,7 +10,7 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import apiClient from "@/lib/api-client";
@@ -23,6 +23,18 @@ export default function IndexingPage() {
   const [indexing, setIndexing] = useState(false);
   const [message, setMessage] = useState(null);
   const [response, setResponse] = useState(null);
+
+  // Progress bar state
+  const [progress, setProgress] = useState(0);
+  const [showProgress, setShowProgress] = useState(false);
+  const intervalRef = useRef(null);
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
 
   // Loading state
   if (loading) {
@@ -55,31 +67,128 @@ export default function IndexingPage() {
     setCount(Math.max(1, Math.min(5000, num)));
   }
 
+  function startProgressSimulation() {
+    setProgress(0);
+    setShowProgress(true);
+
+    let current = 0;
+    intervalRef.current = setInterval(() => {
+      // Slow down as we approach 90% to simulate realistic progress
+      current += Math.random() * (current < 50 ? 4 : current < 75 ? 2 : 0.5);
+      if (current >= 90) {
+        current = 90;
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      setProgress(Math.min(current, 90));
+    }, 300);
+  }
+
+  function completeProgress() {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setProgress(100);
+  }
+
   async function handleStartIndexing() {
     setIndexing(true);
     setMessage(null);
     setResponse(null);
 
+    // Start the simulated progress bar
+    startProgressSimulation();
+
     try {
       const res = await apiClient.startIndexing(count, token);
+
+      // Complete the progress bar to 100%
+      completeProgress();
 
       // HTTP error (403 Admin only, etc.)
       if (res.success === false) {
         setMessage({ type: "error", text: res.message || "Indexing failed" });
       } else {
-        // Streamlit shows "Indexing Started" success THEN the full response
-        setMessage({ type: "success", text: "Indexing Started" });
+        setMessage({ type: "success", text: "Indexing Completed" });
         setResponse(res);
       }
     } catch (err) {
+      completeProgress();
       setMessage({ type: "error", text: "Indexing failed. Please try again." });
     }
 
     setIndexing(false);
   }
 
+  const progressBarContainerStyle = {
+    width: "100%",
+    height: 22,
+    backgroundColor: "var(--bg-tertiary, #2a2a3d)",
+    borderRadius: 12,
+    overflow: "hidden",
+    marginTop: 16,
+    border: "1px solid var(--border-color, rgba(255,255,255,0.08))",
+  };
+
+  const progressBarFillStyle = {
+    height: "100%",
+    width: `${progress}%`,
+    background: progress < 100
+      ? "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)"
+      : "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)",
+    backgroundSize: "200% 100%",
+    animation: progress < 100 ? "progressShimmer 1.5s ease-in-out infinite" : "none",
+    borderRadius: 12,
+    transition: "width 0.4s ease, background 0.3s ease",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+
+  const progressTextStyle = {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#fff",
+    textShadow: "0 1px 2px rgba(0,0,0,0.3)",
+    minWidth: 40,
+    textAlign: "center",
+  };
+
+  const statusBoxStyle = {
+    marginTop: 14,
+    padding: "12px 16px",
+    borderRadius: 10,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontSize: 14,
+    fontWeight: 500,
+    background: indexing
+      ? "rgba(99,102,241,0.1)"
+      : "rgba(34,197,94,0.1)",
+    border: indexing
+      ? "1px solid rgba(99,102,241,0.25)"
+      : "1px solid rgba(34,197,94,0.25)",
+    color: indexing
+      ? "var(--primary, #818cf8)"
+      : "#4ade80",
+  };
+
   return (
     <main className="main-content fade-in">
+      {/* Shimmer keyframe for progress bar */}
+      <style>{`
+        @keyframes progressShimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+        @keyframes pulseGlow {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.6; }
+        }
+      `}</style>
+
       {/* Page Header */}
       <div className="page-header">
         <h1 className="page-title">Index B2 Images</h1>
@@ -146,6 +255,45 @@ export default function IndexingPage() {
             "📂 Start Indexing"
           )}
         </button>
+
+        {/* Progress Bar — visible during and after indexing */}
+        {showProgress && (
+          <div style={{ marginTop: 20 }}>
+            {/* Progress bar track */}
+            <div style={progressBarContainerStyle}>
+              <div style={progressBarFillStyle}>
+                {progress >= 15 && (
+                  <span style={progressTextStyle}>{Math.round(progress)}%</span>
+                )}
+              </div>
+            </div>
+
+            {/* Percentage below bar when too small to show inside */}
+            {progress < 15 && (
+              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, textAlign: "right" }}>
+                {Math.round(progress)}%
+              </p>
+            )}
+
+            {/* Status message */}
+            <div style={statusBoxStyle}>
+              {indexing ? (
+                <>
+                  <div
+                    className="spinner"
+                    style={{ width: 16, height: 16, borderWidth: 2, animation: "pulseGlow 1.5s infinite, spin 0.8s linear infinite" }}
+                  ></div>
+                  <span>Indexing started — please wait…</span>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontSize: 18 }}>✅</span>
+                  <span>Indexing completed!</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Message */}
