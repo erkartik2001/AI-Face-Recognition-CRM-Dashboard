@@ -1,11 +1,8 @@
 /**
  * Indexing Page
  *
- * Replica of: frontend/pages/indexing.py
- *
- * - Number input for how many images to index
- * - Start indexing button
- * - Shows "Indexing Started" success + full response from server
+ * Non-blocking indexing with real progress polling via GET /sync-status.
+ * Supports bucket selection for multi-bucket indexing.
  */
 
 "use client";
@@ -17,24 +14,75 @@ import apiClient from "@/lib/api-client";
 
 export default function IndexingPage() {
   const router = useRouter();
-  const { loggedIn, loading, token } = useAuth();
+  const { loggedIn, loading, token, user } = useAuth();
 
   const [count, setCount] = useState(50);
   const [indexing, setIndexing] = useState(false);
   const [message, setMessage] = useState(null);
-  const [response, setResponse] = useState(null);
+  const [syncJob, setSyncJob] = useState(null);
 
-  // Progress bar state
-  const [progress, setProgress] = useState(0);
-  const [showProgress, setShowProgress] = useState(false);
-  const intervalRef = useRef(null);
+  // Bucket selection
+  const [buckets, setBuckets] = useState([]);
+  const [selectedBucket, setSelectedBucket] = useState("");
+  const [loadingBuckets, setLoadingBuckets] = useState(false);
 
-  // Cleanup interval on unmount
+  // Polling
+  const pollRef = useRef(null);
+
+  // Load buckets on mount
   useEffect(() => {
+    if (!loading && loggedIn && token && user?.role === "admin") {
+      loadBuckets();
+      checkExistingSync();
+    }
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, loggedIn, token]);
+
+  async function loadBuckets() {
+    setLoadingBuckets(true);
+    const res = await apiClient.getBuckets(token);
+    if (res.success && res.buckets) {
+      setBuckets(res.buckets);
+      const active = res.buckets.find((b) => b.is_active);
+      if (active) setSelectedBucket(active.bucket_name);
+    }
+    setLoadingBuckets(false);
+  }
+
+  async function checkExistingSync() {
+    const res = await apiClient.getSyncStatus(token);
+    if (res.success && res.in_progress && res.sync_job) {
+      setIndexing(true);
+      setSyncJob(res.sync_job);
+      startPolling();
+    }
+  }
+
+  function startPolling() {
+    if (pollRef.current) clearInterval(pollRef.current);
+
+    pollRef.current = setInterval(async () => {
+      const res = await apiClient.getSyncStatus(token);
+      if (res.success && res.sync_job) {
+        setSyncJob(res.sync_job);
+
+        if (!res.in_progress) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          setIndexing(false);
+
+          if (res.sync_job.status === "completed") {
+            setMessage({ type: "success", text: "Indexing completed successfully!" });
+          } else if (res.sync_job.status === "failed") {
+            setMessage({ type: "error", text: res.sync_job.error || "Indexing failed" });
+          }
+        }
+      }
+    }, 2000);
+  }
 
   // Loading state
   if (loading) {
@@ -48,7 +96,6 @@ export default function IndexingPage() {
     );
   }
 
-  // Auth check
   if (!loggedIn) {
     return (
       <main className="main-content no-sidebar">
@@ -67,117 +114,35 @@ export default function IndexingPage() {
     setCount(Math.max(1, Math.min(5000, num)));
   }
 
-  function startProgressSimulation() {
-    setProgress(0);
-    setShowProgress(true);
-
-    let current = 0;
-    intervalRef.current = setInterval(() => {
-      // Slow down as we approach 90% to simulate realistic progress
-      current += Math.random() * (current < 50 ? 4 : current < 75 ? 2 : 0.5);
-      if (current >= 90) {
-        current = 90;
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      setProgress(Math.min(current, 90));
-    }, 300);
-  }
-
-  function completeProgress() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-    setProgress(100);
-  }
-
   async function handleStartIndexing() {
     setIndexing(true);
     setMessage(null);
-    setResponse(null);
+    setSyncJob(null);
 
-    // Start the simulated progress bar
-    startProgressSimulation();
+    const res = await apiClient.startIndexing(count, token, selectedBucket || null);
 
-    try {
-      const res = await apiClient.startIndexing(count, token);
-
-      // Complete the progress bar to 100%
-      completeProgress();
-
-      // HTTP error (403 Admin only, etc.)
-      if (res.success === false) {
-        setMessage({ type: "error", text: res.message || "Indexing failed" });
-      } else {
-        setMessage({ type: "success", text: "Indexing Completed" });
-        setResponse(res);
-      }
-    } catch (err) {
-      completeProgress();
-      setMessage({ type: "error", text: "Indexing failed. Please try again." });
+    if (res.success === false) {
+      setMessage({ type: "error", text: res.message || "Failed to start indexing" });
+      setIndexing(false);
+      return;
     }
 
-    setIndexing(false);
+    setSyncJob(res.sync_job);
+    startPolling();
   }
 
-  const progressBarContainerStyle = {
-    width: "100%",
-    height: 22,
-    backgroundColor: "var(--bg-tertiary, #2a2a3d)",
-    borderRadius: 12,
-    overflow: "hidden",
-    marginTop: 16,
-    border: "1px solid var(--border-color, rgba(255,255,255,0.08))",
-  };
+  // Progress calculation
+  const progress = syncJob
+    ? syncJob.batch_size > 0
+      ? Math.round(((syncJob.processed || 0) / syncJob.batch_size) * 100)
+      : 0
+    : 0;
 
-  const progressBarFillStyle = {
-    height: "100%",
-    width: `${progress}%`,
-    background: progress < 100
-      ? "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)"
-      : "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)",
-    backgroundSize: "200% 100%",
-    animation: progress < 100 ? "progressShimmer 1.5s ease-in-out infinite" : "none",
-    borderRadius: 12,
-    transition: "width 0.4s ease, background 0.3s ease",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-  };
-
-  const progressTextStyle = {
-    fontSize: 11,
-    fontWeight: 700,
-    color: "#fff",
-    textShadow: "0 1px 2px rgba(0,0,0,0.3)",
-    minWidth: 40,
-    textAlign: "center",
-  };
-
-  const statusBoxStyle = {
-    marginTop: 14,
-    padding: "12px 16px",
-    borderRadius: 10,
-    display: "flex",
-    alignItems: "center",
-    gap: 10,
-    fontSize: 14,
-    fontWeight: 500,
-    background: indexing
-      ? "rgba(99,102,241,0.1)"
-      : "rgba(34,197,94,0.1)",
-    border: indexing
-      ? "1px solid rgba(99,102,241,0.25)"
-      : "1px solid rgba(34,197,94,0.25)",
-    color: indexing
-      ? "var(--primary, #818cf8)"
-      : "#4ade80",
-  };
+  const isComplete = syncJob?.status === "completed";
+  const isFailed = syncJob?.status === "failed";
 
   return (
     <main className="main-content fade-in">
-      {/* Shimmer keyframe for progress bar */}
       <style>{`
         @keyframes progressShimmer {
           0% { background-position: 200% 0; }
@@ -196,7 +161,30 @@ export default function IndexingPage() {
       </div>
 
       {/* Indexing Card */}
-      <div className="card" style={{ maxWidth: 500 }}>
+      <div className="card" style={{ maxWidth: 560 }}>
+        {/* Bucket Selector */}
+        {user?.role === "admin" && buckets.length > 0 && (
+          <div className="form-group">
+            <label className="form-label" htmlFor="bucket-select">
+              Select Bucket
+            </label>
+            <select
+              id="bucket-select"
+              className="form-select"
+              value={selectedBucket}
+              onChange={(e) => setSelectedBucket(e.target.value)}
+              disabled={indexing}
+            >
+              {buckets.map((b) => (
+                <option key={b.bucket_name} value={b.bucket_name}>
+                  {b.bucket_name} {b.is_active ? "(active)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        {/* Count Input */}
         <div className="form-group">
           <label className="form-label" htmlFor="index-count">
             How many images to index?
@@ -219,6 +207,7 @@ export default function IndexingPage() {
               value={count}
               onChange={(e) => handleCountChange(e.target.value)}
               style={{ flex: 1 }}
+              disabled={indexing}
             />
             <button
               className="number-btn"
@@ -229,17 +218,12 @@ export default function IndexingPage() {
             </button>
           </div>
 
-          <p
-            style={{
-              fontSize: 12,
-              color: "var(--text-muted)",
-              marginTop: 8,
-            }}
-          >
+          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
             Range: 1 – 5,000 images
           </p>
         </div>
 
+        {/* Start Button */}
         <button
           className="btn btn-primary btn-full btn-lg"
           onClick={handleStartIndexing}
@@ -249,48 +233,73 @@ export default function IndexingPage() {
           {indexing ? (
             <>
               <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
-              Indexing Images...
+              Indexing in Progress...
             </>
           ) : (
             "📂 Start Indexing"
           )}
         </button>
 
-        {/* Progress Bar — visible during and after indexing */}
-        {showProgress && (
+        {/* Real Progress Bar */}
+        {syncJob && (
           <div style={{ marginTop: 20 }}>
-            {/* Progress bar track */}
-            <div style={progressBarContainerStyle}>
-              <div style={progressBarFillStyle}>
-                {progress >= 15 && (
-                  <span style={progressTextStyle}>{Math.round(progress)}%</span>
+            {/* Progress Track */}
+            <div className="progress-track">
+              <div
+                className="progress-fill"
+                style={{
+                  width: `${isComplete ? 100 : isFailed ? progress : progress}%`,
+                  background: isFailed
+                    ? "linear-gradient(90deg, #ef4444, #dc2626)"
+                    : isComplete
+                    ? "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)"
+                    : "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
+                  backgroundSize: isComplete || isFailed ? "100% 100%" : "200% 100%",
+                  animation: isComplete || isFailed ? "none" : "progressShimmer 1.5s ease-in-out infinite",
+                }}
+              >
+                {(isComplete ? 100 : progress) >= 15 && (
+                  <span className="progress-text">
+                    {isComplete ? 100 : progress}%
+                  </span>
                 )}
               </div>
             </div>
 
-            {/* Percentage below bar when too small to show inside */}
-            {progress < 15 && (
-              <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, textAlign: "right" }}>
-                {Math.round(progress)}%
-              </p>
-            )}
+            {/* Progress Stats */}
+            <div className="progress-stats">
+              <span>
+                {syncJob.processed || 0} / {syncJob.batch_size || "?"} processed
+              </span>
+              {syncJob.skipped > 0 && (
+                <span style={{ color: "var(--warning)" }}>
+                  {syncJob.skipped} skipped
+                </span>
+              )}
+              <span>Bucket: {syncJob.bucket || "—"}</span>
+            </div>
 
-            {/* Status message */}
-            <div style={statusBoxStyle}>
+            {/* Status Box */}
+            <div className={`sync-status-box ${isComplete ? "complete" : isFailed ? "failed" : "running"}`}>
               {indexing ? (
                 <>
                   <div
                     className="spinner"
-                    style={{ width: 16, height: 16, borderWidth: 2, animation: "pulseGlow 1.5s infinite, spin 0.8s linear infinite" }}
+                    style={{ width: 16, height: 16, borderWidth: 2 }}
                   ></div>
-                  <span>Indexing started — please wait…</span>
+                  <span>Indexing in progress — polling live status…</span>
                 </>
-              ) : (
+              ) : isComplete ? (
                 <>
                   <span style={{ fontSize: 18 }}>✅</span>
                   <span>Indexing completed!</span>
                 </>
-              )}
+              ) : isFailed ? (
+                <>
+                  <span style={{ fontSize: 18 }}>❌</span>
+                  <span>Indexing failed: {syncJob.error}</span>
+                </>
+              ) : null}
             </div>
           </div>
         )}
@@ -298,27 +307,43 @@ export default function IndexingPage() {
 
       {/* Message */}
       {message && (
-        <div className={`alert alert-${message.type}`} style={{ marginTop: 20, maxWidth: 500 }}>
+        <div className={`alert alert-${message.type}`} style={{ marginTop: 20, maxWidth: 560 }}>
           {message.type === "success" ? "✅" : "❌"} {message.text}
         </div>
       )}
 
-      {/* Response Data - Streamlit does st.write(response) showing full response */}
-      {response && (
-        <div className="card fade-in" style={{ maxWidth: 500, marginTop: 16 }}>
+      {/* Completed Response */}
+      {syncJob && isComplete && (
+        <div className="card fade-in" style={{ maxWidth: 560, marginTop: 16 }}>
           <div className="card-header">
-            <div className="card-title">Response</div>
+            <div className="card-title">Sync Result</div>
           </div>
-          <pre
-            style={{
-              fontSize: 13,
-              color: "var(--text-secondary)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {JSON.stringify(response, null, 2)}
-          </pre>
+          <div className="sync-result-grid">
+            <div className="sync-result-item">
+              <div className="sync-result-label">Processed</div>
+              <div className="sync-result-value">{syncJob.processed}</div>
+            </div>
+            <div className="sync-result-item">
+              <div className="sync-result-label">Skipped</div>
+              <div className="sync-result-value">{syncJob.skipped || 0}</div>
+            </div>
+            <div className="sync-result-item">
+              <div className="sync-result-label">Total Files</div>
+              <div className="sync-result-value">{syncJob.total_files || "—"}</div>
+            </div>
+            <div className="sync-result-item">
+              <div className="sync-result-label">Remaining</div>
+              <div className="sync-result-value">{syncJob.remaining ?? "—"}</div>
+            </div>
+            <div className="sync-result-item">
+              <div className="sync-result-label">Bucket</div>
+              <div className="sync-result-value">{syncJob.bucket}</div>
+            </div>
+            <div className="sync-result-item">
+              <div className="sync-result-label">Completed At</div>
+              <div className="sync-result-value">{syncJob.completed_at || "—"}</div>
+            </div>
+          </div>
         </div>
       )}
     </main>

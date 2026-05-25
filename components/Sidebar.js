@@ -1,13 +1,10 @@
 /**
  * Sidebar Navigation Component
  *
- * Replaces Streamlit's built-in sidebar navigation
- *
- * Streamlit auto-generates sidebar from pages/ folder:
- *   - dashboard, search_face, indexing (visible to all)
- *   - users, create_user, change_password (visible to all but restricted to admin in page)
- *   - setup_2fa is in utils/ folder, not pages/, so it's not in sidebar in Streamlit
- *     but we add it here for accessibility
+ * Sections:
+ *   Main    - Dashboard, Search Faces, Index Images
+ *   Admin   - Users, Create User, Change Password, Buckets, Sync Logs
+ *   Tools   - Setup 2FA
  */
 
 "use client";
@@ -41,6 +38,8 @@ export default function Sidebar() {
               { href: "/users", label: "Users List", icon: "👥" },
               { href: "/create-user", label: "Create User", icon: "➕" },
               { href: "/change-password", label: "Change Password", icon: "🔑" },
+              { href: "/buckets", label: "Buckets", icon: "🪣" },
+              { href: "/sync-logs", label: "Sync Logs", icon: "📋" },
             ],
           },
         ]

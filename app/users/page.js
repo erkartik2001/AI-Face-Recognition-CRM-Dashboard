@@ -1,10 +1,9 @@
 /**
  * Users List Page
  *
- * Replica of: frontend/pages/users.py
- *
  * - Admin only
  * - Lists all users with role, created_at, last_login, status
+ * - Delete user (with confirmation)
  */
 
 "use client";
@@ -21,6 +20,7 @@ export default function UsersPage() {
   const [users, setUsers] = useState([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [message, setMessage] = useState(null);
+  const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     if (!loading && loggedIn && user?.role === "admin" && token) {
@@ -34,12 +34,8 @@ export default function UsersPage() {
     try {
       const response = await apiClient.getUsers(token);
 
-      // HTTP error (401 expired token, etc.) or admin check failed
       if (response.success === false) {
-        setMessage({
-          type: "error",
-          text: response.message || "Failed to load users",
-        });
+        setMessage({ type: "error", text: response.message || "Failed to load users" });
       } else if (response.success === true) {
         const userList = response.users || [];
         if (userList.length === 0) {
@@ -55,7 +51,26 @@ export default function UsersPage() {
     setLoadingUsers(false);
   }
 
-  // Loading state
+  async function handleDelete(username) {
+    if (!confirm(`Are you sure you want to delete "${username}"? This action cannot be undone.`)) {
+      return;
+    }
+
+    setDeleting(username);
+    setMessage(null);
+
+    const res = await apiClient.deleteUser(username, token);
+
+    if (res.success) {
+      setMessage({ type: "success", text: `User "${username}" deleted` });
+      loadUsers();
+    } else {
+      setMessage({ type: "error", text: res.message || "Failed to delete user" });
+    }
+
+    setDeleting(null);
+  }
+
   if (loading) {
     return (
       <main className="main-content">
@@ -67,7 +82,6 @@ export default function UsersPage() {
     );
   }
 
-  // Auth check
   if (!loggedIn) {
     return (
       <main className="main-content no-sidebar">
@@ -81,7 +95,6 @@ export default function UsersPage() {
     );
   }
 
-  // Admin check
   if (user?.role !== "admin") {
     return (
       <main className="main-content">
@@ -97,13 +110,11 @@ export default function UsersPage() {
 
   return (
     <main className="main-content fade-in">
-      {/* Page Header */}
       <div className="page-header">
         <h1 className="page-title">Users List</h1>
         <p className="page-subtitle">Manage all system users</p>
       </div>
 
-      {/* Loading */}
       {loadingUsers && (
         <div className="spinner-overlay">
           <div className="spinner"></div>
@@ -111,23 +122,21 @@ export default function UsersPage() {
         </div>
       )}
 
-      {/* Message */}
       {message && (
         <div className={`alert alert-${message.type}`}>
           {message.type === "error" && "❌ "}
           {message.type === "warning" && "⚠️ "}
+          {message.type === "success" && "✅ "}
           {message.text}
         </div>
       )}
 
-      {/* User Count */}
       {users.length > 0 && (
         <div className="alert alert-success" style={{ marginBottom: 24 }}>
           ✅ Total Users: <strong>{users.length}</strong>
         </div>
       )}
 
-      {/* User Cards - matches Streamlit's 4-column layout with status */}
       {users.map((u, idx) => (
         <div className="user-card" key={u.username || idx} id={`user-card-${idx}`}>
           <div>
@@ -163,6 +172,25 @@ export default function UsersPage() {
                 <span className="status-badge status-disabled">● Disabled</span>
               )}
             </div>
+          </div>
+
+          {/* Delete button — not for current user */}
+          <div>
+            {u.username !== user?.username && (
+              <button
+                className="btn btn-danger btn-sm"
+                onClick={() => handleDelete(u.username)}
+                disabled={deleting === u.username}
+                id={`delete-user-${idx}`}
+                title={`Delete ${u.username}`}
+              >
+                {deleting === u.username ? (
+                  <div className="spinner" style={{ width: 14, height: 14, borderWidth: 2 }}></div>
+                ) : (
+                  "🗑️"
+                )}
+              </button>
+            )}
           </div>
         </div>
       ))}

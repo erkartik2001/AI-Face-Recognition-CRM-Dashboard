@@ -1,30 +1,58 @@
 /**
  * Setup 2FA Page
  *
- * Replica of: frontend/utils/setup_2fa.py
- *
  * - Enter username
  * - Generate QR code for Google Authenticator
  * - Shows secret key
  *
- * NOTE: The original Streamlit version has NO auth check.
- *       It is a standalone utility accessible to anyone.
+ * NOTE: Backend now requires auth. Admin can setup any user,
+ *       regular users can only setup their own.
  */
 
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth-context";
 import apiClient from "@/lib/api-client";
 
 export default function Setup2FAPage() {
+  const router = useRouter();
+  const { loggedIn, loading, token, user } = useAuth();
+
   const [username, setUsername] = useState("");
   const [generating, setGenerating] = useState(false);
   const [qrUrl, setQrUrl] = useState(null);
   const [secret, setSecret] = useState(null);
   const [message, setMessage] = useState(null);
 
+  if (loading) {
+    return (
+      <main className="main-content">
+        <div className="spinner-overlay" style={{ minHeight: "60vh" }}>
+          <div className="spinner"></div>
+          <span className="spinner-text">Loading...</span>
+        </div>
+      </main>
+    );
+  }
+
+  if (!loggedIn) {
+    return (
+      <main className="main-content no-sidebar">
+        <div style={{ padding: 40 }}>
+          <div className="alert alert-warning">⚠️ Login First</div>
+          <button className="btn btn-primary" onClick={() => router.push("/")}>
+            Go to Login
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   async function handleGenerateQR() {
-    if (!username) {
+    const target = username || user?.username;
+    if (!target) {
       setMessage({ type: "error", text: "Please enter a username" });
       return;
     }
@@ -35,9 +63,8 @@ export default function Setup2FAPage() {
     setSecret(null);
 
     try {
-      const response = await apiClient.setup2fa(username);
+      const response = await apiClient.setup2fa(target, token);
 
-      // HTTP error (404 User not found, etc.)
       if (response.success === false) {
         setMessage({
           type: "error",
@@ -48,10 +75,7 @@ export default function Setup2FAPage() {
         setSecret(response.secret);
         setMessage({ type: "success", text: "QR Code generated successfully" });
       } else {
-        setMessage({
-          type: "error",
-          text: "Failed to generate QR",
-        });
+        setMessage({ type: "error", text: "Failed to generate QR" });
       }
     } catch (err) {
       setMessage({ type: "error", text: "Failed to generate QR code" });
@@ -62,13 +86,11 @@ export default function Setup2FAPage() {
 
   return (
     <main className="main-content fade-in">
-      {/* Page Header */}
       <div className="page-header">
         <h1 className="page-title">Setup Google Authenticator</h1>
         <p className="page-subtitle">Generate 2FA QR code for a user</p>
       </div>
 
-      {/* Form Card */}
       <div className="card" style={{ maxWidth: 500 }}>
         <div className="form-group">
           <label className="form-label" htmlFor="setup-username">
@@ -78,10 +100,15 @@ export default function Setup2FAPage() {
             id="setup-username"
             className="form-input"
             type="text"
-            placeholder="Enter username"
+            placeholder={user?.username || "Enter username"}
             value={username}
             onChange={(e) => setUsername(e.target.value)}
           />
+          {user?.role !== "admin" && (
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+              You can only generate QR for your own account.
+            </p>
+          )}
         </div>
 
         <button
@@ -101,14 +128,12 @@ export default function Setup2FAPage() {
         </button>
       </div>
 
-      {/* Message */}
       {message && (
         <div className={`alert alert-${message.type}`} style={{ marginTop: 20, maxWidth: 500 }}>
           {message.type === "success" ? "✅" : "❌"} {message.text}
         </div>
       )}
 
-      {/* QR Code & Secret */}
       {qrUrl && (
         <div className="card fade-in" style={{ maxWidth: 500, marginTop: 16 }}>
           <div className="card-header">
@@ -116,7 +141,6 @@ export default function Setup2FAPage() {
           </div>
 
           <div className="qr-container">
-            {/* Using a QR code API to render the QR URL */}
             <div className="qr-code-img">
               <img
                 src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(qrUrl)}`}
@@ -124,13 +148,7 @@ export default function Setup2FAPage() {
               />
             </div>
 
-            <p
-              style={{
-                marginTop: 12,
-                fontSize: 13,
-                color: "var(--text-muted)",
-              }}
-            >
+            <p style={{ marginTop: 12, fontSize: 13, color: "var(--text-muted)" }}>
               Scan this QR code with Google Authenticator
             </p>
           </div>

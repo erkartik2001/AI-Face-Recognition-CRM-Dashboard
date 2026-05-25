@@ -1,11 +1,9 @@
 /**
  * Search Face Page
  *
- * Replica of: frontend/pages/search_face.py
- *
  * - Upload face image
- * - Search for matching faces
- * - Display match result with similarity score and matched image
+ * - Animated progress bar while searching
+ * - Display match results with similarity score
  */
 
 "use client";
@@ -22,12 +20,13 @@ export default function SearchFacePage() {
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
   const [message, setMessage] = useState(null);
 
   const fileInputRef = useRef(null);
+  const progressRef = useRef(null);
 
-  // Loading state
   if (loading) {
     return (
       <main className="main-content">
@@ -39,7 +38,6 @@ export default function SearchFacePage() {
     );
   }
 
-  // Auth check
   if (!loggedIn) {
     return (
       <main className="main-content no-sidebar">
@@ -60,7 +58,30 @@ export default function SearchFacePage() {
       setPreview(URL.createObjectURL(selectedFile));
       setResult(null);
       setMessage(null);
+      setProgress(0);
     }
+  }
+
+  function startProgressSim() {
+    setProgress(0);
+    let current = 0;
+    progressRef.current = setInterval(() => {
+      current += Math.random() * (current < 40 ? 6 : current < 70 ? 3 : 1);
+      if (current >= 90) {
+        current = 90;
+        clearInterval(progressRef.current);
+        progressRef.current = null;
+      }
+      setProgress(Math.min(current, 90));
+    }, 200);
+  }
+
+  function completeProgress(success) {
+    if (progressRef.current) {
+      clearInterval(progressRef.current);
+      progressRef.current = null;
+    }
+    setProgress(success ? 100 : 0);
   }
 
   async function handleSearch() {
@@ -69,12 +90,13 @@ export default function SearchFacePage() {
     setSearching(true);
     setResult(null);
     setMessage(null);
+    startProgressSim();
 
     try {
       const response = await apiClient.searchFace(file, token);
 
-      // HTTP error
       if (response.success === false && response._status) {
+        completeProgress(false);
         setMessage({ type: "error", text: response.message || "Search failed" });
         setSearching(false);
         return;
@@ -82,18 +104,20 @@ export default function SearchFacePage() {
 
       const matches = response.matches;
 
-      // matcher.search() can return a dict { success: false, message: "No indexed faces found" }
-      // instead of an array when there's no FAISS index
       if (matches && !Array.isArray(matches)) {
+        completeProgress(false);
         setMessage({ type: "error", text: matches.message || "No indexed faces found" });
       } else if (!matches || matches.length === 0) {
+        completeProgress(false);
         setMessage({ type: "error", text: "No Match Found" });
       } else {
+        completeProgress(true);
         const match = matches[0];
         setResult(match);
         setMessage({ type: "success", text: "Match Found!" });
       }
     } catch (err) {
+      completeProgress(false);
       setMessage({ type: "error", text: "Search failed. Please try again." });
     }
 
@@ -102,7 +126,13 @@ export default function SearchFacePage() {
 
   return (
     <main className="main-content fade-in">
-      {/* Page Header */}
+      <style>{`
+        @keyframes progressShimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
+
       <div className="page-header">
         <h1 className="page-title">Search Face</h1>
         <p className="page-subtitle">Upload a face image to find matches in the database</p>
@@ -144,22 +174,66 @@ export default function SearchFacePage() {
         </div>
 
         {file && (
-          <button
-            className="btn btn-primary btn-full btn-lg"
-            style={{ marginTop: 20 }}
-            onClick={handleSearch}
-            disabled={searching}
-            id="search-face-btn"
-          >
-            {searching ? (
-              <>
-                <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
-                Searching Face...
-              </>
-            ) : (
-              "🔍 Search Face"
+          <>
+            <button
+              className="btn btn-primary btn-full btn-lg"
+              style={{ marginTop: 20 }}
+              onClick={handleSearch}
+              disabled={searching}
+              id="search-face-btn"
+            >
+              {searching ? (
+                <>
+                  <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
+                  Searching Face...
+                </>
+              ) : (
+                "🔍 Search Face"
+              )}
+            </button>
+
+            {/* Search Progress Bar */}
+            {(searching || progress > 0) && (
+              <div style={{ marginTop: 16 }}>
+                <div className="progress-track">
+                  <div
+                    className="progress-fill"
+                    style={{
+                      width: `${progress}%`,
+                      background:
+                        progress >= 100
+                          ? "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)"
+                          : "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
+                      backgroundSize: progress >= 100 ? "100% 100%" : "200% 100%",
+                      animation:
+                        progress >= 100
+                          ? "none"
+                          : "progressShimmer 1.5s ease-in-out infinite",
+                    }}
+                  >
+                    {progress >= 15 && (
+                      <span className="progress-text">{Math.round(progress)}%</span>
+                    )}
+                  </div>
+                </div>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: searching ? "var(--accent-primary-hover)" : progress >= 100 ? "var(--success)" : "var(--text-muted)",
+                    marginTop: 8,
+                    textAlign: "center",
+                    fontWeight: 500,
+                  }}
+                >
+                  {searching
+                    ? "Analyzing face and searching database…"
+                    : progress >= 100
+                    ? "Search complete!"
+                    : ""}
+                </p>
+              </div>
             )}
-          </button>
+          </>
         )}
       </div>
 
@@ -174,7 +248,6 @@ export default function SearchFacePage() {
       {result && (
         <div className="match-result success fade-in">
           <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
-            {/* Score & Info */}
             <div style={{ flex: 1, minWidth: 200 }}>
               <div className="match-label">Similarity Score</div>
               <div className="match-score">{result.similarity?.toFixed(4)}</div>
@@ -183,9 +256,15 @@ export default function SearchFacePage() {
                 <div className="match-label">File Name</div>
                 <div className="match-value">{result.file_name}</div>
               </div>
+
+              {result.bucket_name && (
+                <div style={{ marginTop: 12 }}>
+                  <div className="match-label">Bucket</div>
+                  <div className="match-value">{result.bucket_name}</div>
+                </div>
+              )}
             </div>
 
-            {/* Matched Image */}
             <div style={{ flex: 1, minWidth: 200 }}>
               {result.show_file_url ? (
                 <>

@@ -1,23 +1,36 @@
 /**
  * Dashboard Page
  *
- * Replica of: frontend/pages/dashboard.py
- *
- * - Shows user info (Logged in as + Role as separate lines)
- * - Quick actions: Search Faces, Create User, Index Images
- * - Logout button
+ * - Shows user info + role
+ * - Quick actions: Search Faces, Index Images, Buckets, Sync Logs
+ * - Index stats (total vectors)
  */
 
 "use client";
 
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import apiClient from "@/lib/api-client";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { loggedIn, loading, user, logout } = useAuth();
+  const { loggedIn, loading, user, token, logout } = useAuth();
 
-  // Loading state
+  const [indexStats, setIndexStats] = useState(null);
+
+  useEffect(() => {
+    if (!loading && loggedIn) {
+      loadStats();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, loggedIn]);
+
+  async function loadStats() {
+    const res = await apiClient.getIndexStats();
+    if (res.success) setIndexStats(res);
+  }
+
   if (loading) {
     return (
       <main className="main-content">
@@ -29,7 +42,6 @@ export default function DashboardPage() {
     );
   }
 
-  // Auth check
   if (!loggedIn) {
     return (
       <main className="main-content no-sidebar">
@@ -43,6 +55,8 @@ export default function DashboardPage() {
     );
   }
 
+  const isAdmin = user?.role === "admin";
+
   const quickActions = [
     {
       icon: "🔍",
@@ -51,27 +65,48 @@ export default function DashboardPage() {
       href: "/search-face",
     },
     {
-      icon: "➕",
-      label: "Create User",
-      desc: "Add a new user to the system",
-      href: "/create-user",
-    },
-    {
       icon: "📂",
       label: "Index Images",
       desc: "Index B2 images for face recognition",
       href: "/indexing",
     },
+    ...(isAdmin
+      ? [
+          {
+            icon: "🪣",
+            label: "Buckets",
+            desc: "Manage B2 storage buckets",
+            href: "/buckets",
+          },
+          {
+            icon: "📋",
+            label: "Sync Logs",
+            desc: "View indexing stats & history",
+            href: "/sync-logs",
+          },
+          {
+            icon: "👥",
+            label: "Users",
+            desc: "Manage system users",
+            href: "/users",
+          },
+          {
+            icon: "➕",
+            label: "Create User",
+            desc: "Add a new user to the system",
+            href: "/create-user",
+          },
+        ]
+      : []),
   ];
 
   return (
     <main className="main-content fade-in">
-      {/* Page Header */}
       <div className="page-header">
         <h1 className="page-title">AI Face Recognition CRM</h1>
       </div>
 
-      {/* User Info - Matches Streamlit: separate success alert + role text */}
+      {/* User Info */}
       <div className="alert alert-success" style={{ marginBottom: 12 }}>
         ✅ Logged in as: <strong>{user?.username}</strong>
       </div>
@@ -79,6 +114,22 @@ export default function DashboardPage() {
       <p style={{ fontSize: 15, color: "var(--text-secondary)", marginBottom: 32 }}>
         Role: <strong style={{ textTransform: "capitalize" }}>{user?.role}</strong>
       </p>
+
+      {/* Index Stats */}
+      {indexStats && (
+        <div className="stats-grid" style={{ maxWidth: 480, marginBottom: 32 }}>
+          <div className="stat-card" style={{ cursor: "default" }}>
+            <div className="stat-card-icon">🧠</div>
+            <div className="stat-card-label">{indexStats.total_vectors?.toLocaleString()}</div>
+            <div className="stat-card-desc">FAISS Vectors</div>
+          </div>
+          <div className="stat-card" style={{ cursor: "default" }}>
+            <div className="stat-card-icon">🗺️</div>
+            <div className="stat-card-label">{indexStats.total_mappings?.toLocaleString()}</div>
+            <div className="stat-card-desc">Image Mappings</div>
+          </div>
+        </div>
+      )}
 
       {/* Quick Actions */}
       <h2
