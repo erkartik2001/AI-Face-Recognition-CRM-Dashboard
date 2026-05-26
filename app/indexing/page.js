@@ -219,7 +219,7 @@ export default function IndexingPage() {
           </div>
 
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
-            Range: 1 – 5,000 images
+            Range: 1 – 25,000 images
           </p>
         </div>
 
@@ -252,8 +252,8 @@ export default function IndexingPage() {
                   background: isFailed
                     ? "linear-gradient(90deg, #ef4444, #dc2626)"
                     : isComplete
-                    ? "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)"
-                    : "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
+                      ? "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)"
+                      : "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
                   backgroundSize: isComplete || isFailed ? "100% 100%" : "200% 100%",
                   animation: isComplete || isFailed ? "none" : "progressShimmer 1.5s ease-in-out infinite",
                 }}
