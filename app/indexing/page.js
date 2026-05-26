@@ -111,7 +111,7 @@ export default function IndexingPage() {
 
   function handleCountChange(value) {
     const num = parseInt(value) || 1;
-    setCount(Math.max(1, Math.min(5000, num)));
+    setCount(Math.max(1, Math.min(25000, num)));
   }
 
   async function handleStartIndexing() {
@@ -203,7 +203,7 @@ export default function IndexingPage() {
               className="form-input"
               type="number"
               min={1}
-              max={5000}
+              max={25000}
               value={count}
               onChange={(e) => handleCountChange(e.target.value)}
               style={{ flex: 1 }}
