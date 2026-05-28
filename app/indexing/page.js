@@ -1,8 +1,10 @@
 /**
- * Indexing Page
+ * Indexing Page — Scheduler Control Panel
  *
- * Non-blocking indexing with real progress polling via GET /sync-status.
- * Supports bucket selection for multi-bucket indexing.
+ * Start/stop the automated indexing scheduler.
+ * View live batch progress and scheduler batch history.
+ * The scheduler automatically indexes all registered buckets
+ * in batches of 5000 images at a time.
  */
 
 "use client";
@@ -16,24 +18,23 @@ export default function IndexingPage() {
   const router = useRouter();
   const { loggedIn, loading, token, user } = useAuth();
 
-  const [count, setCount] = useState(50);
-  const [indexing, setIndexing] = useState(false);
-  const [message, setMessage] = useState(null);
+  // Scheduler state
+  const [scheduler, setScheduler] = useState(null);
   const [syncJob, setSyncJob] = useState(null);
-
-  // Bucket selection
-  const [buckets, setBuckets] = useState([]);
-  const [selectedBucket, setSelectedBucket] = useState("");
-  const [loadingBuckets, setLoadingBuckets] = useState(false);
+  const [syncInProgress, setSyncInProgress] = useState(false);
+  const [schedulerLogs, setSchedulerLogs] = useState([]);
+  const [message, setMessage] = useState(null);
+  const [actionLoading, setActionLoading] = useState(false);
 
   // Polling
   const pollRef = useRef(null);
 
-  // Load buckets on mount
+  // Load data on mount
   useEffect(() => {
     if (!loading && loggedIn && token && user?.role === "admin") {
-      loadBuckets();
-      checkExistingSync();
+      fetchSchedulerStatus();
+      fetchSchedulerLogs();
+      startPolling();
     }
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
@@ -41,47 +42,55 @@ export default function IndexingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, loggedIn, token]);
 
-  async function loadBuckets() {
-    setLoadingBuckets(true);
-    const res = await apiClient.getBuckets(token);
-    if (res.success && res.buckets) {
-      setBuckets(res.buckets);
-      const active = res.buckets.find((b) => b.is_active);
-      if (active) setSelectedBucket(active.bucket_name);
-    }
-    setLoadingBuckets(false);
-  }
-
-  async function checkExistingSync() {
-    const res = await apiClient.getSyncStatus(token);
-    if (res.success && res.in_progress && res.sync_job) {
-      setIndexing(true);
-      setSyncJob(res.sync_job);
-      startPolling();
-    }
-  }
-
   function startPolling() {
     if (pollRef.current) clearInterval(pollRef.current);
 
     pollRef.current = setInterval(async () => {
-      const res = await apiClient.getSyncStatus(token);
-      if (res.success && res.sync_job) {
-        setSyncJob(res.sync_job);
+      await fetchSchedulerStatus();
+    }, 3000);
+  }
 
-        if (!res.in_progress) {
-          clearInterval(pollRef.current);
-          pollRef.current = null;
-          setIndexing(false);
+  async function fetchSchedulerStatus() {
+    const res = await apiClient.getSchedulerStatus(token);
+    if (res.success !== false) {
+      setScheduler(res.scheduler || null);
+      setSyncJob(res.sync_job || null);
+      setSyncInProgress(res.sync_in_progress || false);
+    }
+  }
 
-          if (res.sync_job.status === "completed") {
-            setMessage({ type: "success", text: "Indexing completed successfully!" });
-          } else if (res.sync_job.status === "failed") {
-            setMessage({ type: "error", text: res.sync_job.error || "Indexing failed" });
-          }
-        }
-      }
-    }, 2000);
+  async function fetchSchedulerLogs() {
+    const res = await apiClient.getSchedulerLogs(token);
+    if (res.success && res.logs) {
+      setSchedulerLogs(res.logs);
+    }
+  }
+
+  async function handleStart() {
+    setActionLoading(true);
+    setMessage(null);
+    const res = await apiClient.startScheduler(token);
+    if (res.success) {
+      setMessage({ type: "success", text: "Scheduler started!" });
+      setScheduler(res.scheduler || null);
+    } else {
+      setMessage({ type: "error", text: res.message || "Failed to start scheduler" });
+    }
+    setActionLoading(false);
+  }
+
+  async function handleStop() {
+    setActionLoading(true);
+    setMessage(null);
+    const res = await apiClient.stopScheduler(token);
+    if (res.success) {
+      setMessage({ type: "success", text: "Scheduler stopped." });
+      setScheduler(res.scheduler || null);
+    } else {
+      setMessage({ type: "error", text: res.message || "Failed to stop scheduler" });
+    }
+    setActionLoading(false);
+    fetchSchedulerLogs();
   }
 
   // Loading state
@@ -109,37 +118,15 @@ export default function IndexingPage() {
     );
   }
 
-  function handleCountChange(value) {
-    const num = parseInt(value) || 1;
-    setCount(Math.max(1, Math.min(25000, num)));
-  }
+  const isRunning = scheduler?.status === "running";
+  const currentBatch = scheduler?.current_batch;
 
-  async function handleStartIndexing() {
-    setIndexing(true);
-    setMessage(null);
-    setSyncJob(null);
-
-    const res = await apiClient.startIndexing(count, token, selectedBucket || null);
-
-    if (res.success === false) {
-      setMessage({ type: "error", text: res.message || "Failed to start indexing" });
-      setIndexing(false);
-      return;
-    }
-
-    setSyncJob(res.sync_job);
-    startPolling();
-  }
-
-  // Progress calculation
-  const progress = syncJob
+  // Calculate progress for the current batch
+  const batchProgress = syncJob
     ? syncJob.batch_size > 0
       ? Math.round(((syncJob.processed || 0) / syncJob.batch_size) * 100)
       : 0
     : 0;
-
-  const isComplete = syncJob?.status === "completed";
-  const isFailed = syncJob?.status === "failed";
 
   return (
     <main className="main-content fade-in">
@@ -152,200 +139,316 @@ export default function IndexingPage() {
           0%, 100% { opacity: 1; }
           50% { opacity: 0.6; }
         }
+        @keyframes liveDot {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.4); opacity: 0.6; }
+        }
+        .scheduler-status-badge {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 6px 14px;
+          border-radius: 20px;
+          font-size: 13px;
+          font-weight: 600;
+          letter-spacing: 0.5px;
+          text-transform: uppercase;
+        }
+        .scheduler-status-badge.running {
+          background: rgba(34, 197, 94, 0.15);
+          color: #22c55e;
+          border: 1px solid rgba(34, 197, 94, 0.3);
+        }
+        .scheduler-status-badge.stopped {
+          background: rgba(239, 68, 68, 0.12);
+          color: #ef4444;
+          border: 1px solid rgba(239, 68, 68, 0.25);
+        }
+        .scheduler-status-badge .dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: currentColor;
+        }
+        .scheduler-status-badge.running .dot {
+          animation: liveDot 1.5s ease-in-out infinite;
+        }
+        .stat-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: 12px;
+          margin-top: 16px;
+        }
+        .stat-card {
+          background: var(--bg-card, rgba(30,30,40,0.6));
+          border: 1px solid var(--border, rgba(255,255,255,0.08));
+          border-radius: 10px;
+          padding: 14px;
+          text-align: center;
+        }
+        .stat-card .label {
+          font-size: 11px;
+          color: var(--text-muted, #888);
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          margin-bottom: 4px;
+        }
+        .stat-card .value {
+          font-size: 20px;
+          font-weight: 700;
+          color: var(--text-primary, #fff);
+        }
+        .log-table {
+          width: 100%;
+          border-collapse: collapse;
+          margin-top: 12px;
+          font-size: 13px;
+        }
+        .log-table th, .log-table td {
+          padding: 10px 12px;
+          text-align: left;
+          border-bottom: 1px solid var(--border, rgba(255,255,255,0.06));
+        }
+        .log-table th {
+          color: var(--text-muted, #888);
+          font-weight: 600;
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .log-table tr:hover td {
+          background: rgba(255,255,255,0.03);
+        }
+        .status-pill {
+          display: inline-block;
+          padding: 3px 10px;
+          border-radius: 12px;
+          font-size: 11px;
+          font-weight: 600;
+        }
+        .status-pill.completed {
+          background: rgba(34, 197, 94, 0.15);
+          color: #4ade80;
+        }
+        .status-pill.running {
+          background: rgba(99, 102, 241, 0.15);
+          color: #818cf8;
+        }
+        .status-pill.failed {
+          background: rgba(239, 68, 68, 0.12);
+          color: #f87171;
+        }
+        .status-pill.no_work {
+          background: rgba(234, 179, 8, 0.12);
+          color: #fbbf24;
+        }
+        .btn-group-scheduler {
+          display: flex;
+          gap: 12px;
+          margin-top: 20px;
+        }
       `}</style>
 
       {/* Page Header */}
       <div className="page-header">
-        <h1 className="page-title">Index B2 Images</h1>
-        <p className="page-subtitle">Index images from Backblaze B2 for face recognition</p>
+        <h1 className="page-title">Indexing Scheduler</h1>
+        <p className="page-subtitle">
+          Automated face indexing — processes all registered buckets in batches of 5,000
+        </p>
       </div>
 
-      {/* Indexing Card */}
-      <div className="card" style={{ maxWidth: 560 }}>
-        {/* Bucket Selector */}
-        {user?.role === "admin" && buckets.length > 0 && (
-          <div className="form-group">
-            <label className="form-label" htmlFor="bucket-select">
-              Select Bucket
-            </label>
-            <select
-              id="bucket-select"
-              className="form-select"
-              value={selectedBucket}
-              onChange={(e) => setSelectedBucket(e.target.value)}
-              disabled={indexing}
-            >
-              {buckets.map((b) => (
-                <option key={b.bucket_name} value={b.bucket_name}>
-                  {b.bucket_name} {b.is_active ? "(active)" : ""}
-                </option>
-              ))}
-            </select>
+      {/* Scheduler Control Card */}
+      <div className="card" style={{ maxWidth: 620 }}>
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div className="card-title">Scheduler Control</div>
+          <div className={`scheduler-status-badge ${isRunning ? "running" : "stopped"}`}>
+            <span className="dot"></span>
+            {isRunning ? "Running" : "Stopped"}
+          </div>
+        </div>
+
+        {/* Scheduler Info */}
+        {scheduler && (
+          <div className="stat-grid">
+            <div className="stat-card">
+              <div className="label">Batches Done</div>
+              <div className="value">{scheduler.total_batches_completed || 0}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Batch Size</div>
+              <div className="value">{(scheduler.batch_size || 5000).toLocaleString()}</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Interval</div>
+              <div className="value">{scheduler.interval_seconds || 120}s</div>
+            </div>
+            <div className="stat-card">
+              <div className="label">Started At</div>
+              <div className="value" style={{ fontSize: 13 }}>{scheduler.started_at || "—"}</div>
+            </div>
           </div>
         )}
 
-        {/* Count Input */}
-        <div className="form-group">
-          <label className="form-label" htmlFor="index-count">
-            How many images to index?
-          </label>
-
-          <div className="number-input-group">
-            <button
-              className="number-btn"
-              onClick={() => handleCountChange(count - 10)}
-              type="button"
-            >
-              −
-            </button>
-            <input
-              id="index-count"
-              className="form-input"
-              type="number"
-              min={1}
-              max={25000}
-              value={count}
-              onChange={(e) => handleCountChange(e.target.value)}
-              style={{ flex: 1 }}
-              disabled={indexing}
-            />
-            <button
-              className="number-btn"
-              onClick={() => handleCountChange(count + 10)}
-              type="button"
-            >
-              +
-            </button>
-          </div>
-
-          <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
-            Range: 1 – 25,000 images
-          </p>
-        </div>
-
-        {/* Start Button */}
-        <button
-          className="btn btn-primary btn-full btn-lg"
-          onClick={handleStartIndexing}
-          disabled={indexing}
-          id="start-indexing-btn"
-        >
-          {indexing ? (
-            <>
-              <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
-              Indexing in Progress...
-            </>
-          ) : (
-            "📂 Start Indexing"
-          )}
-        </button>
-
-        {/* Real Progress Bar */}
-        {syncJob && (
+        {/* Current Batch Progress */}
+        {syncInProgress && syncJob && (
           <div style={{ marginTop: 20 }}>
-            {/* Progress Track */}
+            <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
+              Processing: <strong>{syncJob.bucket || "—"}</strong>
+            </div>
+
             <div className="progress-track">
               <div
                 className="progress-fill"
                 style={{
-                  width: `${isComplete ? 100 : isFailed ? progress : progress}%`,
-                  background: isFailed
-                    ? "linear-gradient(90deg, #ef4444, #dc2626)"
-                    : isComplete
-                      ? "linear-gradient(90deg, #22c55e, #4ade80, #22c55e)"
-                      : "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
-                  backgroundSize: isComplete || isFailed ? "100% 100%" : "200% 100%",
-                  animation: isComplete || isFailed ? "none" : "progressShimmer 1.5s ease-in-out infinite",
+                  width: `${batchProgress}%`,
+                  background: "linear-gradient(90deg, #6366f1, #818cf8, #6366f1)",
+                  backgroundSize: "200% 100%",
+                  animation: "progressShimmer 1.5s ease-in-out infinite",
                 }}
               >
-                {(isComplete ? 100 : progress) >= 15 && (
-                  <span className="progress-text">
-                    {isComplete ? 100 : progress}%
-                  </span>
+                {batchProgress >= 15 && (
+                  <span className="progress-text">{batchProgress}%</span>
                 )}
               </div>
             </div>
 
-            {/* Progress Stats */}
             <div className="progress-stats">
-              <span>
-                {syncJob.processed || 0} / {syncJob.batch_size || "?"} processed
-              </span>
+              <span>{syncJob.processed || 0} / {syncJob.batch_size || "?"} processed</span>
               {syncJob.skipped > 0 && (
-                <span style={{ color: "var(--warning)" }}>
-                  {syncJob.skipped} skipped
-                </span>
+                <span style={{ color: "var(--warning)" }}>{syncJob.skipped} skipped</span>
               )}
-              <span>Bucket: {syncJob.bucket || "—"}</span>
             </div>
+          </div>
+        )}
 
-            {/* Status Box */}
-            <div className={`sync-status-box ${isComplete ? "complete" : isFailed ? "failed" : "running"}`}>
-              {indexing ? (
+        {/* Current batch idle status */}
+        {isRunning && !syncInProgress && currentBatch && (
+          <div style={{ marginTop: 16, padding: 12, borderRadius: 8, background: "rgba(255,255,255,0.03)", fontSize: 13, color: "var(--text-muted)" }}>
+            {currentBatch.status === "idle" ? (
+              <span>💤 {currentBatch.message || "Waiting for next cycle..."}</span>
+            ) : (
+              <span>Last batch: {currentBatch.bucket} — {currentBatch.processed || 0} processed</span>
+            )}
+          </div>
+        )}
+
+        {/* Action Buttons */}
+        <div className="btn-group-scheduler">
+          {!isRunning ? (
+            <button
+              className="btn btn-primary btn-lg"
+              onClick={handleStart}
+              disabled={actionLoading}
+              id="start-scheduler-btn"
+              style={{ flex: 1 }}
+            >
+              {actionLoading ? (
                 <>
-                  <div
-                    className="spinner"
-                    style={{ width: 16, height: 16, borderWidth: 2 }}
-                  ></div>
-                  <span>Indexing in progress — polling live status…</span>
+                  <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
+                  Starting...
                 </>
-              ) : isComplete ? (
+              ) : (
+                "▶ Start Scheduler"
+              )}
+            </button>
+          ) : (
+            <button
+              className="btn btn-lg"
+              onClick={handleStop}
+              disabled={actionLoading}
+              id="stop-scheduler-btn"
+              style={{
+                flex: 1,
+                background: "rgba(239, 68, 68, 0.15)",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.3)"
+              }}
+            >
+              {actionLoading ? (
                 <>
-                  <span style={{ fontSize: 18 }}>✅</span>
-                  <span>Indexing completed!</span>
+                  <div className="spinner" style={{ width: 18, height: 18, borderWidth: 2 }}></div>
+                  Stopping...
                 </>
-              ) : isFailed ? (
-                <>
-                  <span style={{ fontSize: 18 }}>❌</span>
-                  <span>Indexing failed: {syncJob.error}</span>
-                </>
-              ) : null}
-            </div>
+              ) : (
+                "⏹ Stop Scheduler"
+              )}
+            </button>
+          )}
+
+          <button
+            className="btn btn-lg"
+            onClick={() => { fetchSchedulerLogs(); fetchSchedulerStatus(); }}
+            style={{
+              background: "rgba(99, 102, 241, 0.12)",
+              color: "#818cf8",
+              border: "1px solid rgba(99, 102, 241, 0.2)"
+            }}
+            title="Refresh status and logs"
+          >
+            🔄
+          </button>
+        </div>
+
+        {/* Error display */}
+        {scheduler?.last_error && (
+          <div className="alert alert-error" style={{ marginTop: 16 }}>
+            ⚠️ Last Error: {scheduler.last_error}
           </div>
         )}
       </div>
 
       {/* Message */}
       {message && (
-        <div className={`alert alert-${message.type}`} style={{ marginTop: 20, maxWidth: 560 }}>
+        <div className={`alert alert-${message.type}`} style={{ marginTop: 16, maxWidth: 620 }}>
           {message.type === "success" ? "✅" : "❌"} {message.text}
         </div>
       )}
 
-      {/* Completed Response */}
-      {syncJob && isComplete && (
-        <div className="card fade-in" style={{ maxWidth: 560, marginTop: 16 }}>
-          <div className="card-header">
-            <div className="card-title">Sync Result</div>
-          </div>
-          <div className="sync-result-grid">
-            <div className="sync-result-item">
-              <div className="sync-result-label">Processed</div>
-              <div className="sync-result-value">{syncJob.processed}</div>
-            </div>
-            <div className="sync-result-item">
-              <div className="sync-result-label">Skipped</div>
-              <div className="sync-result-value">{syncJob.skipped || 0}</div>
-            </div>
-            <div className="sync-result-item">
-              <div className="sync-result-label">Total Files</div>
-              <div className="sync-result-value">{syncJob.total_files || "—"}</div>
-            </div>
-            <div className="sync-result-item">
-              <div className="sync-result-label">Remaining</div>
-              <div className="sync-result-value">{syncJob.remaining ?? "—"}</div>
-            </div>
-            <div className="sync-result-item">
-              <div className="sync-result-label">Bucket</div>
-              <div className="sync-result-value">{syncJob.bucket}</div>
-            </div>
-            <div className="sync-result-item">
-              <div className="sync-result-label">Completed At</div>
-              <div className="sync-result-value">{syncJob.completed_at || "—"}</div>
-            </div>
-          </div>
+      {/* Scheduler Batch History */}
+      <div className="card" style={{ maxWidth: 820, marginTop: 20 }}>
+        <div className="card-header">
+          <div className="card-title">Batch History</div>
         </div>
-      )}
+
+        {schedulerLogs.length === 0 ? (
+          <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)", fontSize: 14 }}>
+            No batches processed yet. Start the scheduler to begin indexing.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table className="log-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Bucket</th>
+                  <th>Status</th>
+                  <th>Processed</th>
+                  <th>Skipped</th>
+                  <th>Started</th>
+                  <th>Completed</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedulerLogs.map((log) => (
+                  <tr key={log.id}>
+                    <td style={{ color: "var(--text-muted)" }}>{log.id}</td>
+                    <td>{log.bucket_name}</td>
+                    <td>
+                      <span className={`status-pill ${log.status}`}>
+                        {log.status === "no_work" ? "up to date" : log.status}
+                      </span>
+                    </td>
+                    <td>{log.processed}</td>
+                    <td>{log.skipped}</td>
+                    <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{log.started_at || "—"}</td>
+                    <td style={{ fontSize: 12, color: "var(--text-muted)" }}>{log.completed_at || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </main>
   );
 }
